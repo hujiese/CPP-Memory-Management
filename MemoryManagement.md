@@ -82,7 +82,7 @@
 
 可见 int* p4 = allocator<int>().allocate(3, (int*)0) 操作成功申请了三个int的空间。
 
-### 二、4.基本构件之 newdelete expression ###
+### 二、基本构件之 newdelete expression ###
 
 #### 1、内存申请 ####
 
@@ -183,3 +183,600 @@
 ![](https://i.imgur.com/pFUmLy0.png)
 
 具体的内容可见代码注解和打印效果。
+
+### 三、Array new ###
+
+![](https://i.imgur.com/aWEq4Ve.png)
+
+上图主要展示的是关于new array内存分配的大致情况。当new一个数组对象时（例如 new Complex[3]），编译器将分配一块内存，这块内存首部是关于对象内存分配的一些标记，然后下面会分配三个连续的对象内存，在使用delete释放内存时需要使用delete[]。如果不使用delete[]，只是使用delete只会讲分配的三块内存空间释放，但不会调用对象的析构函数，如果对象内部还使用了new指向其他空间，由于析构函数不会调用，那么将会导致内存泄漏。图中new string[3]便是一个例子，虽然str[0]、str[1]、str[2]被析构了，但只是调用了str[0]的析构函数，其他对象的析构函数不被调用，这里就会出问题。
+
+下面将演示数组对象创建与析构过程：
+
+![](https://i.imgur.com/7FwNSzm.png)
+
+	#include <iostream>
+	#include <new>		//placement new
+	using namespace std;
+	
+	namespace jj03
+	{
+	
+		class A
+		{
+		public:
+			int id;
+	
+			A() : id(0)      { cout << "default ctor. this=" << this << " id=" << id << endl; }
+			A(int i) : id(i) { cout << "ctor. this=" << this << " id=" << id << endl; }
+			~A()             { cout << "dtor. this=" << this << " id=" << id << endl; }
+		};
+	
+		void test_array_new_and_placement_new()
+		{
+			cout << "\ntest_placement_new().......... \n";
+	
+			size_t size = 3;
+	
+			{
+				//case 1
+				//模擬 memory pool 的作法, array new + placement new. 崩潰 
+	
+				A* buf = (A*)(new char[sizeof(A)*size]);
+				A* tmp = buf;
+	
+				cout << "buf=" << buf << "  tmp=" << tmp << endl;
+	
+				for (int i = 0; i < size; ++i)
+					new (tmp++) A(i);  			//3次 调用ctor 
+	
+				cout << "buf=" << buf << "  tmp=" << tmp << endl;
+	
+				//!	delete [] buf;    	//crash. why?
+				//因為這其實是個 char array，看到 delete [] buf; 編譯器會企圖喚起多次 A::~A. 
+				// 但 array memory layout 中找不到與 array 元素個數 (本例 3) 相關的信息, 
+				// -- 整個格局都錯亂 (從我對 VC 的認識而言)，於是崩潰。 
+				delete buf;     	//dtor just one time, ~[0]	
+	
+				cout << "\n\n";
+			}
+	
+			{
+				//case 2
+				//回頭測試單純的 array new
+	
+				A* buf = new A[size];  //default ctor 3 次. [0]先於[1]先於[2])
+				//A必須有 default ctor, 否則 [Error] no matching function for call to 'jj02::A::A()'
+				A* tmp = buf;
+	
+				cout << "buf=" << buf << "  tmp=" << tmp << endl;
+	
+				for (int i = 0; i < size; ++i)
+					new (tmp++) A(i);  		//3次 ctor 
+	
+				cout << "buf=" << buf << "  tmp=" << tmp << endl;
+	
+				delete[] buf;    //dtor three times (次序逆反, [2]先於[1]先於[0])	
+			}
+	
+			{
+				//case 3	
+				//掌握崩潰原因, 再次模擬 memory pool作法, array new + placement new. 	
+				//不, 不做了, 因為 memory pool 只是供應 memory, 它並不管 construction, 
+				//也不管 destruction. 它只負責回收 memory. 
+				//所以它是以 void* 或 char* 取得 memory, 釋放 (刪除)的也是 void* or char*.  
+				//不像本例 case 1 釋放 (刪除) 的是 A*. 
+				//
+				//事實上 memory pool 形式如 jj04::test 
+			}
+	
+		}
+	} //namespace
+	
+	int main(void)
+	{
+		jj03::test_array_new_and_placement_new();
+		return 0;
+	}
+
+编译运行结果如下：
+
+![](https://i.imgur.com/kcoXFR6.png)
+
+构造函数调用顺序是按照构建对象顺序来执行的，但是析构函数执行却相反。
+
+接下来将更具体地展示new array对象的内存分配情况：
+
+![](https://i.imgur.com/mQAjijM.png)
+
+如果使用new分配十个内存的int，内存空间如上图所示，首先内存块会有一个头和尾，黄色部分为debug信息，灰色部分才是真正使用到的内存，蓝色部分的12bytes是为了让该内存块以16字节对齐。在这个例子中delete pi和delete[] pi效果是一样的，因为int没有析构函数。但是下面的例子就不一样了：
+
+![](https://i.imgur.com/RCX6Hfm.png)
+
+上图通过new申请三个Demo空间大小，内存块使用了96byte，这里是这样计算得到的:黄色部分调试信息32 + 4 = 36byte；黄色部分下面的“3”用于标记实际分配给对象内存个数，这里是三个所以里面内容为3，消耗4byte；Demo内有三个int类型成员变量，一个Demo消耗内存3 * 4 = 12byte，由于有三个Demo，所以消耗了12 * 3 = 36byte空间；到目前为止消耗36 + 4 + 36 = 76byte，加上头尾cookie一共8byte一共消耗84byte，由于需要16位对齐，所以填充蓝色部分为12byte，一共消耗了84 + 12 = 96byte。这里释放内存时需要加上delete[]，上面分配内存中有个标记“3”，所以编译器将释放三个Demo对象空间，如果不加就会报错。
+
+### 四、placement new ###
+
+![](https://i.imgur.com/aWyButl.png)
+
+### 五、重载 ###
+
+#### 1、C++内存分配的途径 ####
+
+![](https://i.imgur.com/xAguah0.png)
+
+![](https://i.imgur.com/XkgjnI1.png)
+
+#### 2、重载new 和 delete ####
+
+![](https://i.imgur.com/2o83TNy.png)
+
+![](https://i.imgur.com/KMrjz7s.png)
+
+![](https://i.imgur.com/sZrLSr8.png)
+
+![](https://i.imgur.com/S2yG6Um.png)
+
+![](https://i.imgur.com/6D7odtt.png)
+
+![](https://i.imgur.com/KjGXpFs.png)
+
+![](https://i.imgur.com/GPW5wRa.png)
+
+![](https://i.imgur.com/0ZoNJdM.png)
+
+![](https://i.imgur.com/VgcPaVf.png)
+
+![](https://i.imgur.com/PcPsPWd.png)
+
+#### 3、测试案例 ####
+
+测试一：
+
+	#include <cstddef>
+	#include <iostream>
+	#include <string>
+	using namespace std;
+	
+	namespace jj06
+	{
+	
+		class Foo
+		{
+		public:
+			int _id;
+			long _data;
+			string _str;
+	
+		public:
+			static void* operator new(size_t size);
+			static void  operator delete(void* deadObject, size_t size);
+			static void* operator new[](size_t size);
+			static void  operator delete[](void* deadObject, size_t size);
+	
+			Foo() : _id(0)      { cout << "default ctor. this=" << this << " id=" << _id << endl; }
+			Foo(int i) : _id(i) { cout << "ctor. this=" << this << " id=" << _id << endl; }
+			//virtual 
+			~Foo()              { cout << "dtor. this=" << this << " id=" << _id << endl; }
+	
+			//不加 virtual dtor, sizeof = 12, new Foo[5] => operator new[]() 的 size 參數是 64, 
+			//加了 virtual dtor, sizeof = 16, new Foo[5] => operator new[]() 的 size 參數是 84, 
+			//上述二例，多出來的 4 可能就是個 size_t 欄位用來放置 array size. 
+		};
+	
+		void* Foo::operator new(size_t size)
+		{
+			Foo* p = (Foo*)malloc(size);
+			cout << "Foo::operator new(), size=" << size << "\t  return: " << p << endl;
+	
+			return p;
+		}
+	
+		void Foo::operator delete(void* pdead, size_t size)
+		{
+			cout << "Foo::operator delete(), pdead= " << pdead << "  size= " << size << endl;
+			free(pdead);
+		}
+	
+		void* Foo::operator new[](size_t size)
+		{
+			Foo* p = (Foo*)malloc(size);  //crash, 問題可能出在這兒 
+			cout << "Foo::operator new[](), size=" << size << "\t  return: " << p << endl;
+	
+			return p;
+		}
+	
+		void Foo::operator delete[](void* pdead, size_t size)
+		{
+			cout << "Foo::operator delete[](), pdead= " << pdead << "  size= " << size << endl;
+	
+			free(pdead);
+		}
+	
+		//-------------	
+		void test_overload_operator_new_and_array_new()
+		{
+			cout << "\ntest_overload_operator_new_and_array_new().......... \n";
+	
+			cout << "sizeof(Foo)= " << sizeof(Foo) << endl;
+	
+			{
+				Foo* p = new Foo(7);
+				delete p;
+	
+				Foo* pArray = new Foo[5];	//無法給 array elements 以 initializer 
+				delete[] pArray;
+			}
+	
+			{
+				cout << "testing global expression ::new and ::new[] \n";
+				// 這會繞過 overloaded new(), delete(), new[](), delete[]() 
+				// 但當然 ctor, dtor 都會被正常呼叫.  
+	
+				Foo* p = ::new Foo(7);
+				::delete p;
+	
+				Foo* pArray = ::new Foo[5];
+				::delete[] pArray;
+			}
+		}
+	} //namespace
+	
+	int main(void)
+	{
+		jj06::test_overload_operator_new_and_array_new();
+		return 0;
+	}
+
+编译运行结果如下：
+
+![](https://i.imgur.com/c6l7tRe.png)
+
+测试二：
+
+	#include <vector>  //for test
+	#include <cstddef>
+	#include <iostream>
+	#include <string>
+	using namespace std;
+	
+	namespace jj07
+	{
+	
+		class Bad { };
+		class Foo
+		{
+		public:
+			Foo() { cout << "Foo::Foo()" << endl; }
+			Foo(int) {
+				cout << "Foo::Foo(int)" << endl;
+				// throw Bad();  
+			}
+	
+			//(1) 這個就是一般的 operator new() 的重載 
+			void* operator new(size_t size){
+				cout << "operator new(size_t size), size= " << size << endl;
+				return malloc(size);
+			}
+	
+			//(2) 這個就是標準庫已經提供的 placement new() 的重載 (形式)
+			//    (所以我也模擬 standard placement new 的動作, just return ptr) 
+			void* operator new(size_t size, void* start){
+				cout << "operator new(size_t size, void* start), size= " << size << "  start= " << start << endl;
+				return start;
+			}
+	
+			//(3) 這個才是嶄新的 placement new 
+			void* operator new(size_t size, long extra){
+				cout << "operator new(size_t size, long extra)  " << size << ' ' << extra << endl;
+				return malloc(size + extra);
+			}
+	
+			//(4) 這又是一個 placement new 
+			void* operator new(size_t size, long extra, char init){
+				cout << "operator new(size_t size, long extra, char init)  " << size << ' ' << extra << ' ' << init << endl;
+				return malloc(size + extra);
+			}
+	
+			//(5) 這又是一個 placement new, 但故意寫錯第一參數的 type (它必須是 size_t 以滿足正常的 operator new) 
+			//!  	void* operator new(long extra, char init) { //[Error] 'operator new' takes type 'size_t' ('unsigned int') as first parameter [-fpermissive]
+			//!	  	cout << "op-new(long,char)" << endl;
+			//!    	return malloc(extra);
+			//!  	} 	
+	
+			//以下是搭配上述 placement new 的各個 called placement delete. 
+			//當 ctor 發出異常，這兒對應的 operator (placement) delete 就會被喚起. 
+			//應該是要負責釋放其搭檔兄弟 (placement new) 分配所得的 memory.  
+			//(1) 這個就是一般的 operator delete() 的重載 
+			void operator delete(void*, size_t)
+			{
+				cout << "operator delete(void*,size_t)  " << endl;
+			}
+	
+			//(2) 這是對應上述的 (2)  
+			void operator delete(void*, void*)
+			{
+				cout << "operator delete(void*,void*)  " << endl;
+			}
+	
+			//(3) 這是對應上述的 (3)  
+			void operator delete(void*, long)
+			{
+				cout << "operator delete(void*,long)  " << endl;
+			}
+	
+			//(4) 這是對應上述的 (4)  
+			//如果沒有一一對應, 也不會有任何編譯報錯 
+			void operator delete(void*, long, char)
+			{
+				cout << "operator delete(void*,long,char)  " << endl;
+			}
+	
+		private:
+			int m_i;
+		};
+	
+	
+		//-------------	
+		void test_overload_placement_new()
+		{
+			cout << "\n\n\ntest_overload_placement_new().......... \n";
+	
+			Foo start;  //Foo::Foo
+	
+			Foo* p1 = new Foo;           //op-new(size_t)
+			Foo* p2 = new (&start) Foo;  //op-new(size_t,void*)
+			Foo* p3 = new (100) Foo;     //op-new(size_t,long)
+			Foo* p4 = new (100, 'a') Foo; //op-new(size_t,long,char)
+	
+			Foo* p5 = new (100) Foo(1);     //op-new(size_t,long)  op-del(void*,long)
+			Foo* p6 = new (100, 'a') Foo(1); //
+			Foo* p7 = new (&start) Foo(1);  //
+			Foo* p8 = new Foo(1);           //
+			//VC6 warning C4291: 'void *__cdecl Foo::operator new(unsigned int)'
+			//no matching operator delete found; memory will not be freed if
+			//initialization throws an exception
+		}
+	} //namespace	
+	
+	int main(void)
+	{
+		jj07::test_overload_placement_new();
+		return 0;
+	}
+
+编译运行结果如下：
+
+![](https://i.imgur.com/J7nEVmm.png)
+
+
+### 五、pre-class allocator ###
+
+![](https://i.imgur.com/o1landO.png)
+
+![](https://i.imgur.com/XeVjepx.png)
+
+案例如下：
+
+	#include <cstddef>
+	#include <iostream>
+	using namespace std;
+	
+	namespace jj04
+	{
+		//ref. C++Primer 3/e, p.765
+		//per-class allocator 
+	
+		class Screen {
+		public:
+			Screen(int x) : i(x) { };
+			int get() { return i; }
+	
+			void* operator new(size_t);
+			void  operator delete(void*, size_t);	//(2)
+			//! void  operator delete(void*);			//(1) 二擇一. 若(1)(2)並存,會有很奇怪的報錯 (摸不著頭緒) 
+	
+		private:
+			Screen* next;
+			static Screen* freeStore;
+			static const int screenChunk;
+		private:
+			int i;
+		};
+		Screen* Screen::freeStore = 0;
+		const int Screen::screenChunk = 24;
+	
+		void* Screen::operator new(size_t size)
+		{
+			Screen *p;
+			if (!freeStore) {
+				//linked list 是空的，所以攫取一大塊 memory
+				//以下呼叫的是 global operator new
+				size_t chunk = screenChunk * size;
+				freeStore = p =
+					reinterpret_cast<Screen*>(new char[chunk]);
+				//將分配得來的一大塊 memory 當做 linked list 般小塊小塊串接起來
+				for (; p != &freeStore[screenChunk - 1]; ++p)
+					p->next = p + 1;
+				p->next = 0;
+			}
+			p = freeStore;
+			freeStore = freeStore->next;
+			return p;
+		}
+	
+	
+		//! void Screen::operator delete(void *p)		//(1)
+		void Screen::operator delete(void *p, size_t)	//(2)二擇一 
+		{
+			//將 deleted object 收回插入 free list 前端
+			(static_cast<Screen*>(p))->next = freeStore;
+			freeStore = static_cast<Screen*>(p);
+		}
+	
+		//-------------
+		void test_per_class_allocator_1()
+		{
+			cout << "\ntest_per_class_allocator_1().......... \n";
+	
+			cout << sizeof(Screen) << endl;		//8	
+	
+			size_t const N = 100;
+			Screen* p[N];
+	
+			for (int i = 0; i< N; ++i)
+				p[i] = new Screen(i);
+	
+			//輸出前 10 個 pointers, 用以比較其間隔 
+			for (int i = 0; i< 10; ++i)
+				cout << p[i] << endl;
+	
+			for (int i = 0; i< N; ++i)
+				delete p[i];
+		}
+	} //namespace
+	
+	int main(void)
+	{
+		jj04::test_per_class_allocator_1();
+		return 0;
+	}
+
+编译运行结果如下：
+
+![](https://i.imgur.com/AAD8dur.png)
+
+每个对象以8byte对齐。内存池本质上是分配了一大块内存，然后将该内存分割为多个小块通过链表拼接起来，所以物理上不一定连续但是逻辑上是连续的。
+
+![](https://i.imgur.com/Va92P0d.png)
+
+![](https://i.imgur.com/DEjg6FL.png)
+
+案例如下：
+
+	#include <cstddef>
+	#include <iostream>
+	using namespace std;
+	
+	namespace jj05
+	{
+		//ref. Effective C++ 2e, item10
+		//per-class allocator 
+	
+		class Airplane {   //支援 customized memory management
+		private:
+			struct AirplaneRep {
+				unsigned long miles;
+				char type;
+			};
+		private:
+			union {
+				AirplaneRep rep;  //此針對 used object
+				Airplane* next;   //此針對 free list
+			};
+		public:
+			unsigned long getMiles() { return rep.miles; }
+			char getType() { return rep.type; }
+			void set(unsigned long m, char t)
+			{
+				rep.miles = m;
+				rep.type = t;
+			}
+		public:
+			static void* operator new(size_t size);
+			static void  operator delete(void* deadObject, size_t size);
+		private:
+			static const int BLOCK_SIZE;
+			static Airplane* headOfFreeList;
+		};
+	
+		Airplane* Airplane::headOfFreeList;
+		const int Airplane::BLOCK_SIZE = 512;
+	
+		void* Airplane::operator new(size_t size)
+		{
+			//如果大小錯誤，轉交給 ::operator new()
+			if (size != sizeof(Airplane))
+			return ::operator new(size);
+	
+			Airplane* p = headOfFreeList;
+	
+			//如果 p 有效，就把list頭部移往下一個元素
+			if (p)
+				headOfFreeList = p->next;
+			else {
+				//free list 已空。配置一塊夠大記憶體，
+				//令足夠容納 BLOCK_SIZE 個 Airplanes
+				Airplane* newBlock = static_cast<Airplane*>
+					(::operator new(BLOCK_SIZE * sizeof(Airplane)));
+				//組成一個新的 free list：將小區塊串在一起，但跳過 
+				//#0 元素，因為要將它傳回給呼叫者。
+				for (int i = 1; i < BLOCK_SIZE - 1; ++i)
+					newBlock[i].next = &newBlock[i + 1];
+				newBlock[BLOCK_SIZE - 1].next = 0; //以null結束
+	
+				// 將 p 設至頭部，將 headOfFreeList 設至
+				// 下一個可被運用的小區塊。
+				p = newBlock;
+				headOfFreeList = &newBlock[1];
+			}
+			return p;
+		}
+	
+		// operator delete 接獲一塊記憶體。
+		// 如果它的大小正確，就把它加到 free list 的前端
+		void Airplane::operator delete(void* deadObject,
+			size_t size)
+		{
+			if (deadObject == 0) return;
+			if (size != sizeof(Airplane)) {
+				::operator delete(deadObject);
+				return;
+			}
+	
+			Airplane *carcass =
+				static_cast<Airplane*>(deadObject);
+	
+			carcass->next = headOfFreeList;
+			headOfFreeList = carcass;
+		}
+	
+		//-------------
+		void test_per_class_allocator_2()
+		{
+			cout << "\ntest_per_class_allocator_2().......... \n";
+	
+			cout << sizeof(Airplane) << endl;    //8
+	
+			size_t const N = 100;
+			Airplane* p[N];
+	
+			for (int i = 0; i< N; ++i)
+				p[i] = new Airplane;
+	
+	
+			//隨機測試 object 正常否 
+			p[1]->set(1000, 'A');
+			p[5]->set(2000, 'B');
+			p[9]->set(500000, 'C');
+			cout << p[1] << ' ' << p[1]->getType() << ' ' << p[1]->getMiles() << endl;
+			cout << p[5] << ' ' << p[5]->getType() << ' ' << p[5]->getMiles() << endl;
+			cout << p[9] << ' ' << p[9]->getType() << ' ' << p[9]->getMiles() << endl;
+	
+			//輸出前 10 個 pointers, 用以比較其間隔 
+			for (int i = 0; i< 10; ++i)
+				cout << p[i] << endl;
+	
+			for (int i = 0; i< N; ++i)
+				delete p[i];
+		}
+	} //namespace
+	
+	int main(void)
+	{
+		jj05::test_per_class_allocator_2();
+		return 0;
+	}
+
+编译运行结果如下：
+
+![](https://i.imgur.com/fM1lMiv.png)
