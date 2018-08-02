@@ -71,3 +71,30 @@
 
 ![](https://i.imgur.com/jfBEG5f.png)
 
+#### 3、std::alloc源码剖析 ####
+
+![](https://i.imgur.com/Mf5qVqE.png)
+
+![](https://i.imgur.com/tWjkErU.png)
+
+![](https://i.imgur.com/hK3r07F.png)
+
+![](https://i.imgur.com/SCvJ2A6.png)
+
+![](https://i.imgur.com/ofe7YUv.png)
+
+![](https://i.imgur.com/zXMf35J.png)
+
+![](https://i.imgur.com/ubYKWxM.png)
+
+![](https://i.imgur.com/ICXnj4c.png)
+
+![](https://i.imgur.com/p9EfgAj.png)
+
+![](https://i.imgur.com/j26x3xi.png)
+
+![](https://i.imgur.com/t4Gz1D7.png)
+
+![](https://i.imgur.com/QhuRqGz.png)
+
+![](https://i.imgur.com/eL1hcds.png)
