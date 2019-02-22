@@ -308,15 +308,25 @@ VS下可以直接通过内存空间调用构造函数，但侯杰测试在GNU C�
 
 ![](https://i.imgur.com/xAguah0.png)
 
+如果是正常情况下，调用new之后走的是第二条路线，如果在类中重载了operator new()，那么走的是第一条路线，但最后还是要调用到系统的::operator new()函数，这在后续的例子中会体现。
+
 ![](https://i.imgur.com/XkgjnI1.png)
+
+对于GNU C，背后使用的allocate()函数最后也是调用了系统的::operator new()函数。
 
 #### 2、重载new 和 delete ####
 
 ![](https://i.imgur.com/2o83TNy.png)
 
+上面这张图演示了如何重载系统的::operator new()函数，该方法最后也是模拟了系统的做法，效果和系统的方法一样，但一般不推荐重载::operator new()函数，因为它对全局有影响，如果使用不当将造成很大的问题。
+
 ![](https://i.imgur.com/KMrjz7s.png)
 
+如果是在类中重载operator new()方法，那么该方法有N多种形式，但必须保证函数参数列表第一个参数是size_t类型变量；对于operator delete()，第一个参数必须是void* 类型，第二个size_t是可选项，可以去掉。
+
 ![](https://i.imgur.com/sZrLSr8.png)
+
+对于operator new[]和operator delete[]函数的重载，和前面类似。
 
 ![](https://i.imgur.com/S2yG6Um.png)
 
