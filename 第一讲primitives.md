@@ -795,6 +795,7 @@ VS下可以直接通过内存空间调用构造函数，但侯杰测试在GNU C�
 
 ![](https://i.imgur.com/fM1lMiv.png)
 
+这种做法有几点比较有意思，首先是使用了union保存链表元素的next指针，这样整体上可以节省空间；其次是delete函数，它并没有直接将目标元素删除，而是将它当作下一个可分配的内存空间，也就是说如果delete某元素，那么该元素占有的内存空间不会被free掉，而是在下一次调用new时分配给新的对象。
 ### 六、static allocator ###
 
 ![](https://i.imgur.com/9dojXlJ.png)
@@ -956,8 +957,15 @@ VS下可以直接通过内存空间调用构造函数，但侯杰测试在GNU C�
 
 ![](https://i.imgur.com/czxP8JH.png)
 
+之前的几个版本都是在类的内部重载了operator new()和operator delete()函数，这些版本都将分配内存的工作放在这些函数中，但现在的这个版本将这些分配内存的操作放在了allocator类中，这就渐渐接近了标准库的方法。从上面的代码中可以看到，两个类Foo和Goo中operator new()和operator delete()函数等很多部分代码类似，于是可以使用宏来将这些高度相似的代码提取出来，简化类的内部结构，但最后达到的结果是一样的：
+
+![](https://i.imgur.com/baXE2RO.png)
+
+![](https://i.imgur.com/nog6qAD.png)
 
 ### 七、global allocator ###
+
+上面我们自己定义的分配器使用了一条链表来管理内存的，但标准库却用了多条链表来管理，这在后续会详细介绍：
 
 ![](https://i.imgur.com/0M5X6lY.png)
 
