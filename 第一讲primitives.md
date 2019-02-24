@@ -973,7 +973,11 @@ VS下可以直接通过内存空间调用构造函数，但侯杰测试在GNU C�
 
 ![](https://i.imgur.com/TJ9GqFz.png)
 
+如果用户调用new申请一块内存，如果由于系统原因或者申请内存过大导致申请失败，这时将抛出异常，在一些老的编译器中可能会直接返回0，可以参考上图右边代码，当无法分配内存时，operator new()函数内部将调用_calnewh()函数，这个函数通过左边的typedef传入，看程序员是否能自己写一个handler处理函数来处理该问题。一般有两个选择，让更多的Memory可用或者直接abort()或exit()。下面是测试的一个结果：
+
 ![](https://i.imgur.com/JfazkE0.png)
+
+该部分中自定义了处理函数noMoreMemory()并通过set_new_handler来注册该处理函数，在BCB4编译器中会调用到自定义的noMoreMemory()函数，但在右边的dev c++中却没有调用，这个还要看平台。
 
 ### 九、=default和=delete ###
 
