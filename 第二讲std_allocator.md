@@ -133,6 +133,10 @@ std::alloc使用一个16个元素的数组来管理内存链表，而我们上�
 
 #### 3、std::alloc源码剖析 ####
 
+侯杰老师的ppt上总结的很好，在看这部分内容时需要结合老师的ppt，为了方便分析，这里结合老师的课程，使用“倒叙”的方式，先介绍中间的几张ppt，然后跳回前面，顺序和原版ppt不一样。
+
+原版ppt的1-3张介绍的是GCC 2.9的std::alloc的第一级分配器，这里先从第二级开始分析，然后再到第一级。
+
 ![](https://i.imgur.com/Mf5qVqE.png)
 
 ![](https://i.imgur.com/tWjkErU.png)
@@ -141,9 +145,67 @@ std::alloc使用一个16个元素的数组来管理内存链表，而我们上�
 
 ![](https://i.imgur.com/SCvJ2A6.png)
 
+该分配器为__default_alloc_template，一开始默认使用的分配器，在该类中定义了ROUND_UP函数，用来将申请内存数量做16字节对齐。定义了union free_list_link，在后面会介绍它的作用，在上一章中我们构建的一个小的分配器中也定义了该联合体，作用类似，该联合体可以使用struct代替。free_list是一个有16个obj*元素的数组，在前面讲过，GCC 2.9的分配器用一个16字节数组管理16条链表，free_list便是该管理数组。refill和chunk_alloc在后面再介绍。start_free和end_free分别指向该内存池的头和尾。
+
 ![](https://i.imgur.com/ofe7YUv.png)
 
+首先看allocate函数，在函数的一开始便定义了:
+
+	obj* volatile *my_free_list;
+
+结合上图右侧的链表图和上上一张图片内容，my_free_list指向的是free_list中16个元素中的任何一个，*my_free_list则取出free_list某元素中的值，该值指向一条分配内存的链表。所以my_free_list要定义为二级指针。
+
+result则保存分配给用户的一块内存的地址。
+
+首先：
+
+    if (n > (size_t)__MAX_BYTES) {
+        return(malloc_alloc::allocate(n));
+    }
+
+检查用户申请内存块大小，如果大于__MAX_BYTES（128）那么将调用malloc_alloc::allocate()，这便是第一级分配器，这在后面分析。现在假设用户申请内存小于128字节，那么将根据用户申请内存大小分配对应的内存，由于内存池使用free_list链表管理的，每个free_list链表元素管理不同的内存块大小，这在前面介绍过了。于是有：
+
+	my_free_list = free_list + FREELIST_INDEX(n);
+
+定位到该内存块的位置，这时my_free_list指向的是管理该内存块的空间的地址，使用*my_free_list便可以取到该内存块的地址：
+
+	result = *my_free_list;
+
+然后判断result是否为空：
+
+    if (result == 0) {
+        void* r = refill(ROUND_UP(n));
+        return r;
+    }
+
+如果为空，说明系统内存不够用了，将使用refill()函数分配内存，这部分在后面会介绍。
+
+如果情况正常，那么将该链表中下一个可以使用的空间设置为当前分配给用户空间指向的下一个、在逻辑上连续的空间，最后将result返回给用户：
+
+    *my_free_list = result->free_list_link;
+    return (result);
+
+下面的这张图很形象地演示了内存分配的过程：
+
 ![](https://i.imgur.com/zXMf35J.png)
+
+接下来分析释放内存。
+
+	  static void deallocate(void *p, size_t n)  //p may not be 0
+	  {
+	    obj* q = (obj*)p;
+	    obj* volatile *my_free_list;   //obj** my_free_list;
+	
+	    if (n > (size_t) __MAX_BYTES) {
+	        malloc_alloc::deallocate(p, n);
+	        return;
+	    }
+	    my_free_list = free_list + FREELIST_INDEX(n);
+	    q->free_list_link = *my_free_list;
+	    *my_free_list = q;
+	  }
+
+释放内存的代码也不难理解，找到需要释放内存的那块空间的地址，然后将当前可分配给用户的空间地址设置为需要释放的该内存空间，一开始指向的可分配的内存空间地址赋值给需要释放空间地址的逻辑连续的下一个内存地址。感觉十分拗口，图和代码更能体现这一过程：
 
 ![](https://i.imgur.com/ubYKWxM.png)
 
