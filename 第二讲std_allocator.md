@@ -137,12 +137,6 @@ std::alloc使用一个16个元素的数组来管理内存链表，而我们上�
 
 原版ppt的1-3张介绍的是GCC 2.9的std::alloc的第一级分配器，这里先从第二级开始分析，然后再到第一级。
 
-![](https://i.imgur.com/Mf5qVqE.png)
-
-![](https://i.imgur.com/tWjkErU.png)
-
-![](https://i.imgur.com/hK3r07F.png)
-
 ![](https://i.imgur.com/SCvJ2A6.png)
 
 该分配器为__default_alloc_template，一开始默认使用的分配器，在该类中定义了ROUND_UP函数，用来将申请内存数量做16字节对齐。定义了union free_list_link，在后面会介绍它的作用，在上一章中我们构建的一个小的分配器中也定义了该联合体，作用类似，该联合体可以使用struct代替。free_list是一个有16个obj*元素的数组，在前面讲过，GCC 2.9的分配器用一个16字节数组管理16条链表，free_list便是该管理数组。refill和chunk_alloc在后面再介绍。start_free和end_free分别指向该内存池的头和尾。
@@ -209,9 +203,154 @@ result则保存分配给用户的一块内存的地址。
 
 ![](https://i.imgur.com/ubYKWxM.png)
 
+上面说到，不论是分配内存还是释放内存，则有：
+
+    if (n > (size_t)__MAX_BYTES) {
+        return(malloc_alloc::allocate(n));
+    }
+
+和：
+
+    if (n > (size_t) __MAX_BYTES) {
+        malloc_alloc::deallocate(p, n);
+        return;
+    }
+
+也就是将内存分配与释放操作放到第一级allocator中：
+
+![](https://i.imgur.com/Mf5qVqE.png)
+
+从上图中可以看到，第一级分配器叫做：
+
+	class __malloc_alloc_template
+
+其实有：
+
+	typedef __malloc_alloc_template<0>  malloc_alloc;
+
+这在后面会介绍。
+
+分配器的allocate函数如下：
+
+	  static void* allocate(size_t n)
+	  {
+	    void *result = malloc(n);   //直接使用 malloc()
+	    if (0 == result) result = oom_malloc(n);
+	    return result;
+	  }
+
+直接调用malloc函数分配内存，如果分配失败则调用oom_malloc函数。
+
+同样地，reallocate也是如此：
+
+	  static void* reallocate(void *p, size_t /* old_sz */, size_t new_sz)
+	  {
+	    void * result = realloc(p, new_sz); //直接使用 realloc()
+	    if (0 == result) result = oom_realloc(p, new_sz);
+	    return result;
+	  }
+
+如果重新要求内存失败，则调用oom_realloc函数，这两个函数在后续会介绍。
+
+deallocate操作则直接释放内存：
+
+	static void deallocate(void *p, size_t /* n */)
+	{
+		free(p);                    //直接使用 free()
+	}
+
+set_malloc_handler是个函数指针，里面传入一个void (*f)()类型函数：
+
+	  static void (*set_malloc_handler(void (*f)()))()
+	  { //類似 C++ 的 set_new_handler().
+	    void (*old)() = __malloc_alloc_oom_handler;
+	    __malloc_alloc_oom_handler = f;
+	    return(old);
+	  }
+
+该函数设置的是内存分配不够情况下的错误处理函数，这个需要交给用户来管理，首先保存先前的处理函数，然后再将新的处理函数f赋值给__malloc_alloc_oom_handler，然后返回旧的错误处理函数，这也在下一张图片中会介绍：
+
+![](https://i.imgur.com/tWjkErU.png)
+
+可以看到oom_malloc函数内部做的事：
+
+	template <int inst>
+	void* __malloc_alloc_template<inst>::oom_malloc(size_t n)
+	{
+	  void (*my_malloc_handler)();
+	  void* result;
+	
+	  for (;;) {    //不斷嘗試釋放、配置、再釋放、再配置…
+	    my_malloc_handler = __malloc_alloc_oom_handler;
+	    if (0 == my_malloc_handler) { __THROW_BAD_ALLOC; }
+	    (*my_malloc_handler)();    //呼叫處理常式，企圖釋放記憶體
+	    result = malloc(n);        //再次嘗試配置記憶體
+	    if (result) return(result);
+	  }
+	}
+
+该函数不断调用__malloc_alloc_oom_handler和malloc函数，直到内存分配成功才返回。oom_realloc也是如此：
+
+	template <int inst>
+	void * __malloc_alloc_template<inst>::oom_realloc(void *p, size_t n)
+	{
+	  void (*my_malloc_handler)();
+	  void* result;
+	
+	  for (;;) {    //不斷嘗試釋放、配置、再釋放、再配置…
+	    my_malloc_handler = __malloc_alloc_oom_handler;
+	    if (0 == my_malloc_handler) { __THROW_BAD_ALLOC; }
+	    (*my_malloc_handler)();    //呼叫處理常式，企圖釋放記憶體。
+	    result = realloc(p, n);    //再次嘗試配置記憶體。
+	    if (result) return(result);
+	  }
+	}
+
+![](https://i.imgur.com/hK3r07F.png)
+
+到这里，分配器只剩下refill函数没有分析了，下面将重点讨论该函数。不过在讨论refill函数之前有必要分析chunk_alloc函数：
+
 ![](https://i.imgur.com/ICXnj4c.png)
 
 ![](https://i.imgur.com/p9EfgAj.png)
+
+该函数声明如下：
+
+	template <bool threads, int inst>
+	char*
+	__default_alloc_template<threads, inst>::
+	chunk_alloc(size_t size, int& nobjs)
+
+函数一开始计算了一些需要的值：
+
+	char* result;
+	size_t total_bytes = size * nobjs;
+	size_t bytes_left = end_free - start_free;
+
+result指向分配给用户的内存，total_bytes为需要分配的内存块的大小，bytes_left则是当前内存池中剩余的空间大小。
+
+然后：
+
+	if (bytes_left >= total_bytes) {
+	  result = start_free;
+	  start_free += total_bytes;
+	  return(result);
+	}
+
+判断如果内存池剩余的内存大小多余需要分配的内存块大小，那么将内存池的首地址start_free直接赋值给result，然后将start_free指针下移total_bytes距离，将当下的result~start_free之间的空间返回给用户。
+
+当然，如果bytes_left比total_bytes小，但是却比size大：
+
+	else if (bytes_left >= size) {
+	      nobjs = bytes_left / size;
+	      total_bytes = size * nobjs;
+	      result = start_free;
+	      start_free += total_bytes;
+	      return(result);
+	  }
+
+这意味着不能直接分配size * nobjs大小内存给用户，那么可以先看看内存池当下的空间能分配多少个size大小的块给用户，然后将该块分配给用户，start_free指针移动total_bytes长度。
+
 
 ![](https://i.imgur.com/j26x3xi.png)
 
