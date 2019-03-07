@@ -352,6 +352,49 @@ result指向分配给用户的内存，total_bytes为需要分配的内存块的
 这意味着不能直接分配size * nobjs大小内存给用户，那么可以先看看内存池当下的空间能分配多少个size大小的块给用户，然后将该块分配给用户，start_free指针移动total_bytes长度。
 
 
+	  size_t bytes_to_get =
+	             2 * total_bytes + ROUND_UP(heap_size >> 4);
+	  // Try to make use of the left-over piece.
+	  if (bytes_left > 0) {
+	      obj* volatile *my_free_list =
+	             free_list + FREELIST_INDEX(bytes_left);
+	
+	      ((obj*)start_free)->free_list_link = *my_free_list;
+	      *my_free_list = (obj*)start_free;
+	  }
+
+这部分查看内存池里面还有没有多余的内存，如果有，就充分利用。然后就是不断地获取内存块，将这些内存块不断切割用链表连接起来，递归这些过程：
+
+      start_free = (char*)malloc(bytes_to_get);
+      if (0 == start_free) {
+          int i;
+          obj* volatile *my_free_list, *p;
+
+          //Try to make do with what we have. That can't
+          //hurt. We do not try smaller requests, since that tends
+          //to result in disaster on multi-process machines.
+          for (i = size; i <= __MAX_BYTES; i += __ALIGN) {
+              my_free_list = free_list + FREELIST_INDEX(i);
+              p = *my_free_list;
+              if (0 != p) {
+                  *my_free_list = p -> free_list_link;
+                  start_free = (char*)p;
+                  end_free = start_free + i;
+                  return(chunk_alloc(size, nobjs));
+                  //Any leftover piece will eventually make it to the
+                  //right free list.
+              }
+          }
+          end_free = 0;       //In case of exception.
+          start_free = (char*)malloc_alloc::allocate(bytes_to_get);
+          //This should either throw an exception or
+          //remedy the situation. Thus we assume it
+          //succeeded.
+      }
+      heap_size += bytes_to_get;
+      end_free = start_free + bytes_to_get;
+      return(chunk_alloc(size, nobjs));
+
 ![](https://i.imgur.com/j26x3xi.png)
 
 ![](https://i.imgur.com/t4Gz1D7.png)
